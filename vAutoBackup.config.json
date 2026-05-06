@@ -1,0 +1,9 @@
+{
+  "backupRoot": "D:\\Backup\\Rhino",
+  "intervalMinutes": 10.0,
+  "enableCleanup": true,
+  "keepLast": 100,
+  "skipIfUnchanged": true,
+  "verboseLogging": false,
+  "autoStart": true
+}
