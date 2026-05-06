@@ -8,12 +8,12 @@ using Rhino.PlugIns;
 
 namespace vAutoBackup;
 
-[System.Runtime.InteropServices.Guid("f8e4d2c1-3b7a-4e5f-9d0c-6a2b8e7f1c4d")]
 /// <summary>
 /// Rhino plug-in entry point for vAutoBackup.
 /// Loads at startup and, when <c>autoStart</c> is enabled in settings, starts
 /// the periodic backup timer automatically — no startup commands required.
 /// </summary>
+[System.Runtime.InteropServices.Guid("f8e4d2c1-3b7a-4e5f-9d0c-6a2b8e7f1c4d")]
 public class vAutoBackupPlugIn : PlugIn
 {
   public override PlugInLoadTime LoadTime => PlugInLoadTime.AtStartup;
