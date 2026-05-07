@@ -9,10 +9,10 @@
     <Title>vAutoBackup</Title>
     <RootNamespace>vAutoBackup</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>26.05.06.120000</Version>
-    <InformationalVersion>26.05.06.120000</InformationalVersion>
-    <AssemblyVersion>26.5.6.1200</AssemblyVersion>
-    <FileVersion>26.5.6.1200</FileVersion>
+    <Version>26.5.7.1029</Version>
+    <InformationalVersion>26.5.7.1029</InformationalVersion>
+    <AssemblyVersion>26.5.7.1029</AssemblyVersion>
+    <FileVersion>26.5.7.1029</FileVersion>
     <!-- Fail fast when output files are locked (no retry loop). -->
     <CopyRetryCount>0</CopyRetryCount>
     <CopyRetryDelayMilliseconds>0</CopyRetryDelayMilliseconds>
