@@ -29,7 +29,9 @@ public class vAutoBackupPlugIn : PlugIn
 
   protected override LoadReturnCode OnLoad(ref string errorMessage)
   {
-    var version = GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
+    var version = GetType().Assembly
+      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()
+      ?.InformationalVersion ?? GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
     var commandNames = CollectRegisteredCommandNames();
     TryLog($"OnLoad OK. Version={version}. Assembly={GetType().Assembly.Location}");
     RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
