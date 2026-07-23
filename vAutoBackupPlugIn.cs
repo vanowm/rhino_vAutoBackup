@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using Rhino;
@@ -35,7 +34,9 @@ public class vAutoBackupPlugIn : PlugIn
       : null) ?? asm.GetName().Version?.ToString() ?? "unknown";
     var commandNames = CollectRegisteredCommandNames();
     var settings = AutoBackupSettings.Current;
-    TryLog($"OnLoad OK. Version={version}. Assembly={GetType().Assembly.Location}");
+    Log.Initialize();
+    Log.Write($"startup  rhino={RhinoApp.Version}  version={version}  dll={asm.Location}");
+    Log.Write($"startup  commands ({commandNames.Count}): {string.Join(", ", commandNames)}");
     if (settings.LogLevel >= AutoBackupLogLevel.Info)
       RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
 
@@ -75,40 +76,5 @@ public class vAutoBackupPlugIn : PlugIn
     catch { }
 
     return names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-  }
-
-  internal static void TryLog(string message)
-  {
-    try
-    {
-      var logDir = ResolveProjectLogsDir();
-      if (string.IsNullOrWhiteSpace(logDir))
-        return;
-
-      Directory.CreateDirectory(logDir);
-      var path = Path.Combine(logDir, "vAutoBackup.log");
-      File.AppendAllText(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}\n");
-    }
-    catch { }
-  }
-
-  private static string ResolveProjectLogsDir()
-  {
-    try
-    {
-      var asmDir = Path.GetDirectoryName(typeof(vAutoBackupPlugIn).Assembly.Location) ?? ".";
-      var dir = new DirectoryInfo(asmDir);
-
-      while (dir is not null)
-      {
-        if (File.Exists(Path.Combine(dir.FullName, "vAutoBackup.csproj")))
-          return Path.Combine(dir.FullName, "logs");
-
-        dir = dir.Parent;
-      }
-
-      return Path.Combine(asmDir, "logs");
-    }
-    catch { return string.Empty; }
   }
 }

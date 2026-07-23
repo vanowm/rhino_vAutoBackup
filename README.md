@@ -1,4 +1,4 @@
-# vAutoBackup  ·  v26.7.23.1750
+# vAutoBackup  ·  v26.7.23.1807
 
 vAutoBackup is a Rhino 8 and Rhino 9 plug-in for verified periodic and one-shot backups of the active document.
 
@@ -57,7 +57,7 @@ The Release plug-ins are:
 - `bin/Release/net7.0-windows/vAutoBackup.dll` for Rhino 8
 - `bin/Release/net10.0-windows/vAutoBackup.dll` for Rhino 9 Load it with Rhino's Plug-in Manager and keep `vAutoBackup.config.json` beside the DLL when deploying custom defaults.
 
-Runtime diagnostics are written to `logs/vAutoBackup.log`; a source checkout uses its project-level `logs` folder and a deployed plug-in falls back to a `logs` folder beside the DLL.
+Runtime diagnostics are written to `vAutoBackup.log` beside the loaded DLL. The file is cleared at startup and begins with the Rhino and plug-in versions.
 
 ## Versioning
 

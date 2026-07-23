@@ -1,6 +1,8 @@
 # Repository Instructions
 
 - Derive every plug-in build version from the latest modified source `*.cs` file, using `yy.M.d.Hmm` with no seconds and non-padded month, day, and hour.
+- Keep tracked text files on CRLF line endings through `.gitattributes` so builds do not emit Git conversion warnings.
+- Route runtime diagnostics through the shared `Log` helper; keep the log beside the loaded DLL, clear it on startup, and record both plug-in and Rhino versions in the startup entry.
 - Build and publish both `net7.0-windows` against Rhino 8 and `net10.0-windows` against Rhino 9; require both DLLs to succeed before the coordinated release commit, tag, and push.
 - For Rhino script files that define `VERSION`, use `yy.m.d.hmm` with no seconds, non-padded month/day/hour, and two-digit minutes; example: `26.7.8.1830`.
 - Immediately after every agent-made project change, create or refresh the pending summary with `build.ps1 -ComposeOnly -Message '<specific behavioral summary of all uncommitted changes>'`; do not defer this until build time. A manually launched workspace build must reuse that summary and prompt only when none exists.

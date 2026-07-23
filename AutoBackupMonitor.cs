@@ -416,7 +416,7 @@ internal static class AutoBackupMonitor
       $"AutoBackup: document written; verifying backup in background: {backupPath}",
       settings,
       AutoBackupLogLevel.Verbose);
-    vAutoBackupPlugIn.TryLog(
+    vAutoBackup.Log.Write(
       $"Temporary backup written. Partial={partialPath} Final={backupPath}");
 
     _ = Task.Run(() =>
@@ -436,7 +436,7 @@ internal static class AutoBackupMonitor
           0);
       }
 
-      vAutoBackupPlugIn.TryLog(result.Message);
+      vAutoBackup.Log.Write(result.Message);
       _uiCompletions.Enqueue(() =>
       {
         if (result.Success)
@@ -465,7 +465,7 @@ internal static class AutoBackupMonitor
         {
           _executing = false;
           var message = $"AutoBackup completion error: {CompactDiagnostic(ex.Message)}";
-          vAutoBackupPlugIn.TryLog(message);
+          vAutoBackup.Log.Write(message);
           RhinoApp.WriteLine(WithNextRun(message));
         }
       }
