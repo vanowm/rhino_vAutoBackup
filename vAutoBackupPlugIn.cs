@@ -40,7 +40,7 @@ public class vAutoBackupPlugIn : PlugIn
       RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
 
     if (settings.AutoStart)
-      AutoBackupMonitor.Start(printMessage: settings.LogLevel >= AutoBackupLogLevel.Info);
+      AutoBackupMonitor.Start();
 
     return LoadReturnCode.Success;
   }

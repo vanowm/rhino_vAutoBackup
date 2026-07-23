@@ -60,7 +60,7 @@ internal static class AutoBackupMonitor
   /// Starts the periodic backup timer with the current persisted settings.
   /// Any previously running timer is stopped first (single-instance guarantee).
   /// </summary>
-  internal static void Start(bool printMessage = true)
+  internal static void Start()
   {
     var settings = AutoBackupSettings.Current;
 
@@ -78,8 +78,7 @@ internal static class AutoBackupMonitor
     _idleHandler = OnIdle;
     RhinoApp.Idle += _idleHandler;
 
-    if (printMessage)
-      RhinoApp.WriteLine($"AutoBackup started: every {settings.IntervalMinutes:G} minute(s).");
+    RhinoApp.WriteLine($"AutoBackup started: every {settings.IntervalMinutes:G} minute(s). Next backup at {_nextRun:HH:mm:ss}.");
   }
 
   /// <summary>Stops the periodic timer.</summary>
