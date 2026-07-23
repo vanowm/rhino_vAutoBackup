@@ -36,6 +36,12 @@ internal static class AutoBackupMonitor
   // Stable names for unsaved documents, keyed by RuntimeSerialNumber
   private static readonly Dictionary<uint, string> _unsavedNames = new();
 
+  private readonly record struct BackupResult(
+    bool Success,
+    string Message,
+    bool VerboseOnly,
+    int DeletedCount);
+
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
@@ -106,11 +112,13 @@ internal static class AutoBackupMonitor
     var doc = RhinoDoc.ActiveDoc;
     if (doc is null)
     {
-      RhinoApp.WriteLine("AutoBackup: backup skipped (no active document).");
+      RhinoApp.WriteLine(WithNextRun("AutoBackup: backup skipped (no active document)."));
       return false;
     }
 
-    return BackupDocument(doc, AutoBackupSettings.Current, forceBackup: true);
+    var settings = AutoBackupSettings.Current;
+    var result = BackupDocument(doc, settings, forceBackup: true);
+    return ReportResult(result, settings);
   }
 
   /// <summary>
@@ -226,10 +234,10 @@ internal static class AutoBackupMonitor
     if (_running)
       _nextRun = DateTime.Now + IntervalSpan(s);
 
-    RhinoApp.WriteLine(
+    RhinoApp.WriteLine(WithNextRun(
       $"AutoBackup options saved: root='{backupRoot}', interval={intervalMinutes:G} min, " +
       $"cleanup={enableCleanup} (keep {keepLast}), skipUnchanged={skipIfUnchanged}, " +
-      $"verbose={verboseLogging}, autoStart={autoStart}");
+      $"verbose={verboseLogging}, autoStart={autoStart}"));
 
     return true;
   }
@@ -268,27 +276,34 @@ internal static class AutoBackupMonitor
       return;
 
     _executing = true;
+    BackupResult? result = null;
+    string? errorMessage = null;
     try
     {
-      BackupDocument(doc, settings, forceBackup: false);
+      result = BackupDocument(doc, settings, forceBackup: false);
     }
     catch (Exception ex)
     {
-      RhinoApp.WriteLine($"AutoBackup periodic error: {ex.Message}");
+      errorMessage = ex.Message;
     }
     finally
     {
       _executing = false;
-      // Reschedule regardless of success/failure.
+      // Reschedule regardless of success/failure, before reporting the result.
       _nextRun = DateTime.Now + IntervalSpan(AutoBackupSettings.Current);
     }
+
+    if (result is { } completed)
+      ReportResult(completed, settings);
+    else
+      RhinoApp.WriteLine(WithNextRun($"AutoBackup periodic error: {errorMessage}"));
   }
 
   // ---------------------------------------------------------------------------
   // Backup execution
   // ---------------------------------------------------------------------------
 
-  private static bool BackupDocument(RhinoDoc doc, AutoBackupSettings settings, bool forceBackup)
+  private static BackupResult BackupDocument(RhinoDoc doc, AutoBackupSettings settings, bool forceBackup)
   {
     var docKey = DocKey(doc);
     var currentToken = GetChangeToken(doc);
@@ -300,16 +315,20 @@ internal static class AutoBackupMonitor
         // First time we see this document: establish baseline and skip.
         // Avoids creating a backup immediately after a doc is opened/imported.
         _changeTokens[docKey] = currentToken;
-        Log($"AutoBackup: initial baseline captured for {DocLabel(doc)}. Waiting for changes.",
-          settings, verboseOnly: true);
-        return false;
+        return new BackupResult(
+          false,
+          $"AutoBackup: initial baseline captured for {DocLabel(doc)}. Waiting for changes.",
+          true,
+          0);
       }
 
       if (lastToken == currentToken)
       {
-        Log($"AutoBackup: no changes since last backup for {DocLabel(doc)}. Skipping.",
-          settings, verboseOnly: true);
-        return false;
+        return new BackupResult(
+          false,
+          $"AutoBackup: no changes since last backup for {DocLabel(doc)}. Skipping.",
+          true,
+          0);
       }
     }
 
@@ -332,24 +351,25 @@ internal static class AutoBackupMonitor
 
     if (doc.Write3dmFile(backupPath, writeOptions))
     {
-      Log($"AutoBackup: backup created: {backupPath}", settings, verboseOnly: true);
-
       // Update stored token so the next skip-check uses post-backup state.
       _changeTokens[docKey] = GetChangeToken(doc);
 
+      var deleted = 0;
       if (settings.EnableCleanup && settings.KeepLast > 0)
-      {
-        var deleted = CleanupOldBackups(backupPath, settings.KeepLast);
-        if (deleted > 0)
-          Log($"AutoBackup: cleanup removed {deleted} old backup(s).", settings, verboseOnly: true);
-      }
+        deleted = CleanupOldBackups(backupPath, settings.KeepLast);
 
-      return true;
+      return new BackupResult(
+        true,
+        $"AutoBackup: backup created: {backupPath}",
+        true,
+        deleted);
     }
 
-    RhinoApp.WriteLine(
-      $"AutoBackup: backup failed: {backupPath} | doc={DocLabel(doc)} | modified={doc.Modified}");
-    return false;
+    return new BackupResult(
+      false,
+      $"AutoBackup: backup failed: {backupPath} | doc={DocLabel(doc)} | modified={doc.Modified}",
+      false,
+      0);
   }
 
   // ---------------------------------------------------------------------------
@@ -623,5 +643,24 @@ internal static class AutoBackupMonitor
     if (verboseOnly && !settings.VerboseLogging)
       return;
     RhinoApp.WriteLine(message);
+  }
+
+  private static bool ReportResult(BackupResult result, AutoBackupSettings settings)
+  {
+    Log(WithNextRun(result.Message), settings, result.VerboseOnly);
+    if (result.DeletedCount > 0)
+      Log($"AutoBackup: cleanup removed {result.DeletedCount} old backup(s).", settings, verboseOnly: true);
+    return result.Success;
+  }
+
+  private static string WithNextRun(string message)
+  {
+    if (!_running || _nextRun == DateTime.MaxValue)
+      return message;
+
+    var separator = message.EndsWith('.') || message.EndsWith('!') || message.EndsWith('?')
+      ? " "
+      : ". ";
+    return $"{message}{separator}Next autosave scheduled at {_nextRun:HH:mm:ss}.";
   }
 }

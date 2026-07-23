@@ -9,15 +9,19 @@
     <Title>vAutoBackup</Title>
     <RootNamespace>vAutoBackup</RootNamespace>
     <LangVersion>latest</LangVersion>
-    <Version>26.5.7.1029</Version>
-    <InformationalVersion>26.5.7.1029</InformationalVersion>
-    <AssemblyVersion>26.5.7.1029</AssemblyVersion>
-    <FileVersion>26.5.7.1029</FileVersion>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <BuildVersion>0.0.0.0</BuildVersion>
+    <Version>$(BuildVersion)</Version>
+    <InformationalVersion>$(BuildVersion)</InformationalVersion>
+    <AssemblyVersion>$(BuildVersion)</AssemblyVersion>
+    <FileVersion>$(BuildVersion)</FileVersion>
     <!-- Fail fast when output files are locked (no retry loop). -->
     <CopyRetryCount>0</CopyRetryCount>
     <CopyRetryDelayMilliseconds>0</CopyRetryDelayMilliseconds>
     <!-- Enabled: successful Release builds auto-commit tracked version artifacts. -->
-    <AutoCommitVersionOnRelease>true</AutoCommitVersionOnRelease>
+    <AutoCommitVersionOnRelease>True</AutoCommitVersionOnRelease>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,6 +38,46 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <Target Name="ComputeSourceBuildVersion" BeforeTargets="GenerateBuildVersionInfo;CommitReleaseVersion">
+    <Exec
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="low"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$root='$(MSBuildProjectDirectory)'; $files=Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.cs' | Where-Object { $_.FullName -notmatch '\\(bin|obj|logs|backups|\.git)\\' -and $_.Name -notlike '*.Generated*' }; $latest=$files | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($latest) { $latest.LastWriteTime.ToString('yy.M.d.Hmm') } else { [DateTime]::Now.ToString('yy.M.d.Hmm') }&quot;">
+      <Output TaskParameter="ConsoleOutput" PropertyName="BuildVersion" />
+    </Exec>
+
+    <PropertyGroup>
+      <Version>$(BuildVersion)</Version>
+      <InformationalVersion>$(BuildVersion)</InformationalVersion>
+      <AssemblyVersion>$(BuildVersion)</AssemblyVersion>
+      <FileVersion>$(BuildVersion)</FileVersion>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="GenerateBuildVersionInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedVersionInfoFile>$(IntermediateOutputPath)vAutoBackup.GeneratedVersionInfo.cs</GeneratedVersionInfoFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyVersion(&quot;$(AssemblyVersion)&quot;)]" />
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyFileVersion(&quot;$(FileVersion)&quot;)]" />
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyInformationalVersion(&quot;$(InformationalVersion)&quot;)]" />
+    </ItemGroup>
+
+    <WriteLinesToFile
+      File="$(GeneratedVersionInfoFile)"
+      Lines="@(GeneratedVersionInfoLines)"
+      Overwrite="true"
+      Encoding="UTF-8" />
+
+    <ItemGroup>
+      <Compile Include="$(GeneratedVersionInfoFile)" />
+    </ItemGroup>
+
+    <Message Importance="high" Text="vAutoBackup build version: $(BuildVersion)" />
+  </Target>
 
   <!-- Create a timestamped snapshot of build outputs after every successful Release build. -->
   <Target Name="CreateReleaseBackup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
@@ -55,96 +99,148 @@
     <Message Importance="high" Text="vAutoBackup backup created: $(BackupOutputRoot)" />
   </Target>
 
-  <!-- Commit updated version metadata and release plugin binary after successful Release builds. -->
-  <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true'">
+  <!-- Commit and push only when a successful Release build changes the tracked DLL. -->
+  <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true' and !Exists('$(MSBuildProjectDirectory)\.git\vautobackup-hold-commits')">
     <PropertyGroup>
-      <ShortTagVersion>$([System.Text.RegularExpressions.Regex]::Match('$(Version)', '^\d{2}\.\d{2}\.\d{2}').Value)</ShortTagVersion>
+      <ShortTagVersion>$([System.Text.RegularExpressions.Regex]::Match('$(Version)', '^\d{2}\.\d{1,2}\.\d{1,2}').Value)</ShortTagVersion>
     </PropertyGroup>
 
     <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$changed=@(git -C '$(MSBuildProjectDirectory)' status --porcelain -- 'bin/Release/net7.0-windows/vAutoBackup.dll'); if ($changed.Count -gt 0) { exit 1 }; exit 0&quot;"
+      IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="VersionDllStatusExitCode" />
+    </Exec>
+
+    <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; add -A -- ."
-      IgnoreExitCode="true" />
+      IgnoreExitCode="true"
+      Condition="'$(VersionDllStatusExitCode)' == '1'" />
 
     <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; diff --cached --quiet -- ."
-      IgnoreExitCode="true">
+      IgnoreExitCode="true"
+      Condition="'$(VersionDllStatusExitCode)' == '1'">
       <Output TaskParameter="ExitCode" PropertyName="VersionCommitDiffExitCode" />
     </Exec>
 
     <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; diff --cached --quiet -- &quot;bin/Release/net7.0-windows/vAutoBackup.dll&quot;"
       IgnoreExitCode="true"
-      Condition="'$(VersionCommitDiffExitCode)' != '0'">
+      Condition="'$(VersionDllStatusExitCode)' == '1' and '$(VersionCommitDiffExitCode)' != '0'">
       <Output TaskParameter="ExitCode" PropertyName="VersionDllDiffExitCode" />
     </Exec>
 
+    <PropertyGroup Condition="'$(VersionDllDiffExitCode)' == '1'">
+      <ShouldVersionCommit>true</ShouldVersionCommit>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(ShouldVersionCommit)' == 'true'">
+      <PendingMessageFile>$(MSBuildProjectDirectory)\.git\vautobackup-pending-message.txt</PendingMessageFile>
+      <HasPendingMessage Condition="Exists('$(PendingMessageFile)')">true</HasPendingMessage>
+    </PropertyGroup>
+
+    <Error
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(HasPendingMessage)' != 'true'"
+      Text="Missing $(MSBuildProjectDirectory)\.git\vautobackup-pending-message.txt. Commit message required before committing version changes." />
+
     <Exec
-      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$repo='$(MSBuildProjectDirectory)'; $lines=@(git -C $repo diff --cached --name-status -- .); $changes=New-Object System.Collections.Generic.List[object]; foreach($line in $lines){ if([string]::IsNullOrWhiteSpace($line)){continue}; $parts=$line -split '\t+',2; if($parts.Count -lt 2){continue}; $changes.Add([pscustomobject]@{Status=$parts[0]; Path=$parts[1]}) }; $cmdAdds=New-Object System.Collections.Generic.List[string]; $cmdMods=New-Object System.Collections.Generic.List[string]; $hasReadme=$false; $hasBuildCfg=$false; $hasDll=$false; foreach($c in $changes){ $p=($c.Path -replace '\\\\','/'); if($p -eq 'README.md'){$hasReadme=$true}; if($p -eq 'vAutoBackup.csproj' -or $p -eq 'Properties/AssemblyInfo.cs'){$hasBuildCfg=$true}; if($p -eq 'bin/Release/net7.0-windows/vAutoBackup.dll'){$hasDll=$true}; if($p -like 'Commands/*.cs'){ $n=[System.IO.Path]::GetFileNameWithoutExtension($p); if($n -like 'v*'){ if($c.Status -like 'A*'){ if(-not $cmdAdds.Contains($n)){[void]$cmdAdds.Add($n)} } else { if(-not $cmdMods.Contains($n)){[void]$cmdMods.Add($n)} } } } }; function Get-Label([string]$name){ if($name.StartsWith('vAutoBackup')){ return $name.Substring(1) }; return $name }; function Build-LabelList([System.Collections.Generic.List[string]]$items){ if($items.Count -eq 0){ return '' }; $labels=New-Object System.Collections.Generic.List[string]; foreach($i in $items){ [void]$labels.Add((Get-Label $i)) }; if($labels.Count -le 2){ return ($labels -join ', ') }; return (($labels[0..1] -join ', ') + ', +' + ($labels.Count - 2) + ' more') }; $parts=New-Object System.Collections.Generic.List[string]; if($cmdAdds.Count -eq 1){ $parts.Add('add ' + (Get-Label $cmdAdds[0]) + ' command') } elseif($cmdAdds.Count -gt 1){ $parts.Add('add commands: ' + (Build-LabelList $cmdAdds)) }; if($cmdMods.Count -eq 1){ $parts.Add('fix ' + (Get-Label $cmdMods[0]) + ' behavior') } elseif($cmdMods.Count -gt 1){ $parts.Add('fix behaviors: ' + (Build-LabelList $cmdMods)) }; if($hasReadme){ $parts.Add('docs: refresh notes') }; if($hasBuildCfg -and $parts.Count -eq 0){ $parts.Add('build: sync version metadata') }; if($hasDll -and $parts.Count -eq 0){ $parts.Add('build: publish release binary') }; if($parts.Count -eq 0){ $parts.Add('maintenance: apply project updates') }; $summary=($parts -join '; '); $msg='$(Version): ' + $summary; Set-Content -Path (Join-Path $repo '.git\\vAutoBackup-autocommit-message.txt') -Value $msg -NoNewline -Encoding utf8&quot;"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$body=[System.IO.File]::ReadAllText('$(PendingMessageFile)').Trim(); $msg='$(Version): ' + $body; $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText('$(MSBuildProjectDirectory)\.git\vautobackup-autocommit-message.txt',$msg,$enc)&quot;"
+      Condition="'$(HasPendingMessage)' == 'true' and '$(ShouldVersionCommit)' == 'true'"
+      IgnoreExitCode="true" />
+
+    <Delete
+      Files="$(PendingMessageFile)"
+      Condition="'$(HasPendingMessage)' == 'true' and '$(ShouldVersionCommit)' == 'true'" />
+
+    <PropertyGroup Condition="'$(HasPendingMessage)' == 'true' and '$(ShouldVersionCommit)' == 'true'">
+      <VersionCommitMessageExitCode>0</VersionCommitMessageExitCode>
+    </PropertyGroup>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; commit -F &quot;.git/vautobackup-autocommit-message.txt&quot;"
       IgnoreExitCode="true"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionDllDiffExitCode)' != '0'">
-      <Output TaskParameter="ExitCode" PropertyName="VersionCommitMessageExitCode" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitMessageExitCode)' == '0'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionCommitExitCode" />
     </Exec>
 
     <Exec
-      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; commit -F &quot;.git/vAutoBackup-autocommit-message.txt&quot;"
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; push origin master"
       IgnoreExitCode="true"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionDllDiffExitCode)' != '0' and '$(VersionCommitMessageExitCode)' == '0'">
-      <Output TaskParameter="ExitCode" PropertyName="VersionCommitExitCode" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionPushExitCode" />
     </Exec>
 
     <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse -q --verify &quot;refs/tags/$(ShortTagVersion)&quot;"
       IgnoreExitCode="true"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != ''">
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != ''">
       <Output TaskParameter="ExitCode" PropertyName="ShortTagExistsExitCode" />
     </Exec>
 
     <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; tag &quot;$(ShortTagVersion)&quot;"
       IgnoreExitCode="true"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0'">
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0'">
       <Output TaskParameter="ExitCode" PropertyName="ShortTagCreateExitCode" />
     </Exec>
 
     <Message
       Importance="high"
       Text="vAutoBackup version commit created: $(Version)"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'" />
+
+    <Message
+      Importance="high"
+      Text="vAutoBackup version commit pushed to origin/master."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0'" />
+
+    <Message
+      Importance="high"
+      Text="vAutoBackup version commit push failed; commit remains local."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' != '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup short tag created: $(ShortTagVersion)"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' == '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' == '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup short tag skipped (already exists): $(ShortTagVersion)"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' == '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' == '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup short tag skipped (tag creation failed): $(ShortTagVersion)"
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' != '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' != '0'" />
 
     <Message
       Importance="high"
-      Text="vAutoBackup version commit skipped (release DLL unchanged or locked)."
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionDllDiffExitCode)' == '0'" />
+      Text="vAutoBackup version commit skipped (release DLL unchanged)."
+      Condition="'$(VersionDllStatusExitCode)' == '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup version commit skipped (failed to build auto commit message)."
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionDllDiffExitCode)' != '0' and '$(VersionCommitMessageExitCode)' != '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitMessageExitCode)' != '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup version commit skipped (git commit failed; check git identity, branch, or repo state)."
-      Condition="'$(VersionCommitDiffExitCode)' != '0' and '$(VersionDllDiffExitCode)' != '0' and '$(VersionCommitMessageExitCode)' == '0' and '$(VersionCommitExitCode)' != '0'" />
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitMessageExitCode)' == '0' and '$(VersionCommitExitCode)' != '0'" />
 
     <Message
       Importance="high"
       Text="vAutoBackup version commit skipped (no staged changes)."
-      Condition="'$(VersionCommitDiffExitCode)' == '0'" />
+      Condition="'$(VersionDllStatusExitCode)' == '1' and '$(VersionCommitDiffExitCode)' == '0'" />
   </Target>
 
+  <Target Name="ShowOutputVersionAfterBuild" AfterTargets="Build" Condition="Exists('$(TargetPath)')">
+    <GetAssemblyIdentity AssemblyFiles="$(TargetPath)">
+      <Output TaskParameter="Assemblies" ItemName="BuiltAssembly" />
+    </GetAssemblyIdentity>
+
+    <Message Importance="high" Text="Built output: $(TargetPath)" />
+    <Message Importance="high" Text="Built version: %(BuiltAssembly.Version)" />
+  </Target>
 </Project>
