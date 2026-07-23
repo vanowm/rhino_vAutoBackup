@@ -81,7 +81,6 @@
 
   <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true' and Exists('$(MSBuildProjectDirectory)\.git') and !Exists('$(MSBuildProjectDirectory)\.git\release-hold-commits')">
     <PropertyGroup>
-      <ShortTagVersion>$([System.Text.RegularExpressions.Regex]::Match('$(Version)', '^\d{2}\.\d{1,2}\.\d{1,2}').Value)</ShortTagVersion>
       <ReleaseTagVersion>$(Version)</ReleaseTagVersion>
     </PropertyGroup>
 
@@ -148,20 +147,6 @@
     </Exec>
 
     <Exec
-      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse -q --verify &quot;refs/tags/$(ShortTagVersion)&quot;"
-      IgnoreExitCode="true"
-      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != ''">
-      <Output TaskParameter="ExitCode" PropertyName="ShortTagExistsExitCode" />
-    </Exec>
-
-    <Exec
-      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; tag &quot;$(ShortTagVersion)&quot;"
-      IgnoreExitCode="true"
-      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0'">
-      <Output TaskParameter="ExitCode" PropertyName="ShortTagCreateExitCode" />
-    </Exec>
-
-    <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse -q --verify &quot;refs/tags/$(ReleaseTagVersion)&quot;"
       IgnoreExitCode="true"
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0'">
@@ -188,12 +173,6 @@
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) version commit push failed; commit remains local."
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' != '0'" />
-    <Message Importance="high" Text="$(AssemblyName) short tag created: $(ShortTagVersion)"
-      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' == '0'" />
-    <Message Importance="high" Text="$(AssemblyName) short tag skipped (already exists): $(ShortTagVersion)"
-      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' == '0'" />
-    <Message Importance="high" Text="$(AssemblyName) short tag skipped (tag creation failed): $(ShortTagVersion)"
-      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' != '0'" />
     <Message Importance="high" Text="$(AssemblyName) release tag pushed: $(ReleaseTagVersion); GitHub release publishing has started."
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagPushExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) release tag push failed: $(ReleaseTagVersion)."
