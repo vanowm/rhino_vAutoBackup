@@ -445,9 +445,12 @@ internal static class AutoBackupMonitor
           throw new InvalidDataException(
             $"Rhino could not reopen the temporary archive. {CompactDiagnostic(readLog)}".Trim());
 
-        if (!model.IsValid(out var validationLog))
+        if (!string.IsNullOrWhiteSpace(readLog))
           throw new InvalidDataException(
-            $"the reopened archive is invalid. {CompactDiagnostic(validationLog)}".Trim());
+            $"Rhino reported archive read errors. {CompactDiagnostic(readLog)}".Trim());
+
+        if (model.ArchiveVersion <= 0)
+          throw new InvalidDataException("the reopened archive has no valid 3DM version");
       }
 
       // Source and destination share a directory, so promotion cannot expose a
