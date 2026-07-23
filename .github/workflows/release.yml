@@ -22,17 +22,29 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           ASSEMBLY_NAME: vAutoBackup
         run: |
-          $dll = Get-ChildItem -Path bin/Release -Recurse -File -Filter "$env:ASSEMBLY_NAME.dll" |
-            Where-Object { $_.FullName -notmatch '[\\/]backups[\\/]' } |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
+          $runtimes = @('net7.0-windows', 'net10.0-windows')
+          $staging = Join-Path $env:RUNNER_TEMP "$env:ASSEMBLY_NAME-$env:RELEASE_TAG"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
-          if (-not $dll) {
-            throw "Could not find $env:ASSEMBLY_NAME.dll in the tagged repository."
+          $assets = @()
+          foreach ($runtime in $runtimes) {
+            $source = Join-Path $PWD "bin/Release/$runtime/$env:ASSEMBLY_NAME.dll"
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Could not find the $runtime $env:ASSEMBLY_NAME.dll in the tagged repository."
+            }
+
+            $asset = Join-Path $staging "$env:ASSEMBLY_NAME-$runtime.dll"
+            Copy-Item -LiteralPath $source -Destination $asset -Force
+            $assets += $asset
           }
 
-          $assets = @($dll.FullName)
-          $assets += @(Get-ChildItem -Path $dll.DirectoryName -File -Filter '*.rui' | ForEach-Object FullName)
+          $ruiSource = Join-Path $PWD "Toolbar/$env:ASSEMBLY_NAME.rui"
+          if (Test-Path -LiteralPath $ruiSource -PathType Leaf) {
+            $ruiAsset = Join-Path $staging "$env:ASSEMBLY_NAME.rui"
+            Copy-Item -LiteralPath $ruiSource -Destination $ruiAsset -Force
+            $assets += $ruiAsset
+          }
+
           $title = "$env:ASSEMBLY_NAME $env:RELEASE_TAG"
 
           & gh release view $env:RELEASE_TAG *> $null

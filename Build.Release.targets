@@ -12,6 +12,9 @@
     <CopyRetryDelayMilliseconds>0</CopyRetryDelayMilliseconds>
     <AutoCommitVersionOnRelease Condition="'$(AutoCommitVersionOnRelease)' == ''">true</AutoCommitVersionOnRelease>
     <ReleaseDllPath>bin/Release/$(TargetFramework)/$(AssemblyName).dll</ReleaseDllPath>
+    <ReleaseDllPaths Condition="'$(ReleaseDllPaths)' == ''">$(ReleaseDllPath)</ReleaseDllPaths>
+    <IsReleaseCoordinator Condition="'$(TargetFrameworks)' == '' and '$(TargetFramework)' != ''">true</IsReleaseCoordinator>
+    <IsReleaseCoordinator Condition="'$(TargetFrameworks)' != '' and '$(TargetFramework)' == ''">true</IsReleaseCoordinator>
     <PendingMessageFile>$(MSBuildProjectDirectory)\.git\release-pending-message.txt</PendingMessageFile>
     <CommitMessageFile>$(MSBuildProjectDirectory)\.git\release-commit-message.txt</CommitMessageFile>
   </PropertyGroup>
@@ -56,15 +59,15 @@
     <Message Importance="high" Text="$(AssemblyName) build version: $(BuildVersion)" />
   </Target>
 
-  <Target Name="UpdateReadmeVersion" BeforeTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and Exists('$(MSBuildProjectDirectory)\README.md')">
+  <Target Name="UpdateReadmeVersion" AfterTargets="Build" BeforeTargets="CommitReleaseVersion" Condition="'$(Configuration)' == 'Release' and '$(IsReleaseCoordinator)' == 'true' and Exists('$(MSBuildProjectDirectory)\README.md')">
     <Exec
       Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$path='$(MSBuildProjectDirectory)\README.md'; $text=[System.IO.File]::ReadAllText($path); $match=[System.Text.RegularExpressions.Regex]::Match($text, '^(.*?)(\r?\n|$)'); if ($match.Success) { $first=$match.Groups[1].Value; $base=[System.Text.RegularExpressions.Regex]::Replace($first, '\s+\xB7\s+v[\d.]+\s*$', '').TrimEnd(); $updated=($base + '  ' + [char]0x00B7 + '  v$(Version)') + $text.Substring($match.Length - $match.Groups[2].Length); if ($updated -ne $text) { $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText($path,$updated,$enc) } }&quot;" />
   </Target>
 
-  <Target Name="CreateReleaseBackup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <Target Name="CreateReleaseBackup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' and '$(TargetFramework)' != ''">
     <PropertyGroup>
       <BackupTimestamp>$([System.DateTime]::Now.ToString('yy.MM.dd.HHmmss'))</BackupTimestamp>
-      <BackupOutputRoot>$(MSBuildProjectDirectory)\bin\Release\backups\$(BackupTimestamp)</BackupOutputRoot>
+      <BackupOutputRoot>$(MSBuildProjectDirectory)\bin\Release\backups\$(BackupTimestamp)\$(TargetFramework)</BackupOutputRoot>
     </PropertyGroup>
 
     <ItemGroup>
@@ -79,20 +82,20 @@
     <Message Importance="high" Text="$(AssemblyName) backup created: $(BackupOutputRoot)" />
   </Target>
 
-  <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true' and Exists('$(MSBuildProjectDirectory)\.git') and !Exists('$(MSBuildProjectDirectory)\.git\release-hold-commits')">
+  <Target Name="CommitReleaseVersion" AfterTargets="Build" Condition="'$(Configuration)' == 'Release' and '$(IsReleaseCoordinator)' == 'true' and '$(AutoCommitVersionOnRelease)' == 'true' and Exists('$(MSBuildProjectDirectory)\.git') and !Exists('$(MSBuildProjectDirectory)\.git\release-hold-commits')">
     <PropertyGroup>
       <ReleaseTagVersion>$(Version)</ReleaseTagVersion>
     </PropertyGroup>
 
     <Exec
-      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$changed=@(git -C '$(MSBuildProjectDirectory)' status --porcelain -- '$(ReleaseDllPath)'); if ($LASTEXITCODE -ne 0) { exit 2 }; if ($changed.Count -gt 0) { exit 1 }; exit 0&quot;"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$paths=@('$(ReleaseDllPaths)'.Split(';',[System.StringSplitOptions]::RemoveEmptyEntries)); foreach ($path in $paths) { if (-not (Test-Path -LiteralPath (Join-Path '$(MSBuildProjectDirectory)' $path))) { exit 3 } }; $changed=@(git -C '$(MSBuildProjectDirectory)' status --porcelain -- $paths); if ($LASTEXITCODE -ne 0) { exit 2 }; if ($changed.Count -gt 0) { exit 1 }; exit 0&quot;"
       IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="VersionDllStatusExitCode" />
     </Exec>
 
     <Error
       Condition="'$(VersionDllStatusExitCode)' != '0' and '$(VersionDllStatusExitCode)' != '1'"
-      Text="Unable to inspect $(AssemblyName) release DLL status." />
+      Text="Unable to inspect all $(AssemblyName) release DLL outputs." />
 
     <PropertyGroup Condition="'$(VersionDllStatusExitCode)' == '1'">
       <ShouldVersionCommit>true</ShouldVersionCommit>
@@ -115,7 +118,7 @@
       Text="Unable to stage $(AssemblyName) release changes." />
 
     <Exec
-      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; diff --cached --quiet -- &quot;$(ReleaseDllPath)&quot;"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$paths=@('$(ReleaseDllPaths)'.Split(';',[System.StringSplitOptions]::RemoveEmptyEntries)); git -C '$(MSBuildProjectDirectory)' diff --cached --quiet -- $paths; exit $LASTEXITCODE&quot;"
       IgnoreExitCode="true"
       Condition="'$(ShouldVersionCommit)' == 'true'">
       <Output TaskParameter="ExitCode" PropertyName="VersionDllDiffExitCode" />
@@ -177,9 +180,9 @@
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagPushExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) release tag push failed: $(ReleaseTagVersion)."
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagPushExitCode)' != '' and '$(ReleaseTagPushExitCode)' != '0'" />
-    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL unchanged)."
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLLs unchanged)."
       Condition="'$(VersionDllStatusExitCode)' == '0'" />
-    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL was not staged)."
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLLs were not staged)."
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) version commit skipped (failed to build commit message)."
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '1' and '$(VersionCommitMessageExitCode)' != '0'" />

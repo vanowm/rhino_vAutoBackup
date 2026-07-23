@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net7.0-windows</TargetFramework>
+    <TargetFrameworks>net7.0-windows;net10.0-windows</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -9,13 +9,19 @@
     <Title>vAutoBackup</Title>
     <RootNamespace>vAutoBackup</RootNamespace>
     <LangVersion>latest</LangVersion>
+    <BuildInParallel>false</BuildInParallel>
+    <ReleaseDllPaths>bin/Release/net7.0-windows/vAutoBackup.dll;bin/Release/net10.0-windows/vAutoBackup.dll</ReleaseDllPaths>
+    <Rhino9SystemDirectory Condition="Exists('$(ProgramFiles)\Rhino 9\System\RhinoCommon.dll')">$(ProgramFiles)\Rhino 9\System</Rhino9SystemDirectory>
+    <Rhino9SystemDirectory Condition="'$(Rhino9SystemDirectory)' == '' and Exists('$(ProgramFiles)\Rhino 9 WIP\System\RhinoCommon.dll')">$(ProgramFiles)\Rhino 9 WIP\System</Rhino9SystemDirectory>
+    <RhinoSystemDirectory Condition="'$(TargetFramework)' == 'net7.0-windows'">$(ProgramFiles)\Rhino 8\System</RhinoSystemDirectory>
+    <RhinoSystemDirectory Condition="'$(TargetFramework)' == 'net10.0-windows'">$(Rhino9SystemDirectory)</RhinoSystemDirectory>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != ''">
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
 
     <Reference Include="RhinoCommon">
-      <HintPath>$(ProgramFiles)\Rhino 8\System\RhinoCommon.dll</HintPath>
+      <HintPath>$(RhinoSystemDirectory)\RhinoCommon.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
@@ -26,5 +32,8 @@
     </Content>
   </ItemGroup>
 
+  <Target Name="ValidateRhinoReferences" BeforeTargets="ResolveReferences" Condition="'$(TargetFramework)' != '' and !Exists('$(RhinoSystemDirectory)\RhinoCommon.dll')">
+    <Error Text="$(TargetFramework) requires its matching Rhino installation; RhinoCommon.dll was not found under '$(RhinoSystemDirectory)'." />
+  </Target>
   <Import Project="Build.Release.targets" />
 </Project>
