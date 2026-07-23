@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -6,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Rhino;
 using Rhino.FileIO;
@@ -28,8 +30,13 @@ internal static class AutoBackupMonitor
   private static bool _running;
   private static bool _executing; // re-entrancy guard for the idle handler
   private static EventHandler? _idleHandler;
+  private static EventHandler? _completionIdleHandler;
   private static DateTime _nextRun = DateTime.MaxValue;
   private static uint _lastActiveDocSerial;
+
+  // Background file work posts its results here. A dedicated Rhino Idle handler
+  // drains the queue so state changes and command-line output stay on the UI thread.
+  private static readonly ConcurrentQueue<Action> _uiCompletions = new();
 
   // Per-document change tokens: key = "runtimeSerial|path"
   private static readonly Dictionary<string, (bool Modified, int UndoSerial)> _changeTokens = new();
@@ -347,7 +354,7 @@ internal static class AutoBackupMonitor
         completed(new BackupResult(
           false,
           $"AutoBackup: initial baseline captured for {DocLabel(doc)}. Waiting for changes.",
-          true,
+          false,
           0));
         return false;
       }
@@ -357,7 +364,7 @@ internal static class AutoBackupMonitor
         completed(new BackupResult(
           false,
           $"AutoBackup: no changes since last backup for {DocLabel(doc)}. Skipping.",
-          true,
+          false,
           0));
         return false;
       }
@@ -399,28 +406,66 @@ internal static class AutoBackupMonitor
     var postWriteToken = GetChangeToken(doc);
     var enableCleanup = settings.EnableCleanup;
     var keepLast = settings.KeepLast;
+    EnsureCompletionIdleHandler();
 
-    _ = Task.Run(() => FinalizeBackup(partialPath, backupPath, enableCleanup, keepLast))
-      .ContinueWith(task =>
+    RhinoApp.WriteLine(
+      $"AutoBackup: document written; verifying backup in background: {backupPath}");
+    vAutoBackupPlugIn.TryLog(
+      $"Temporary backup written. Partial={partialPath} Final={backupPath}");
+
+    _ = Task.Run(() =>
+    {
+      BackupResult result;
+      try
       {
-        var result = task.IsCompletedSuccessfully
-          ? task.Result
-          : new BackupResult(
-            false,
-            $"AutoBackup: backup verification failed: {backupPath} | " +
-            CompactDiagnostic(task.Exception?.GetBaseException().Message),
-            false,
-            0);
+        result = FinalizeBackup(partialPath, backupPath, enableCleanup, keepLast);
+      }
+      catch (Exception ex)
+      {
+        TryDeletePartial(partialPath);
+        result = new BackupResult(
+          false,
+          $"AutoBackup: backup verification failed: {backupPath} | {CompactDiagnostic(ex.Message)}",
+          false,
+          0);
+      }
 
-        RhinoApp.InvokeOnUiThread(new Action(() =>
-        {
-          if (result.Success)
-            _changeTokens[docKey] = postWriteToken;
-          completed(result);
-        }));
-      }, TaskScheduler.Default);
+      vAutoBackupPlugIn.TryLog(result.Message);
+      _uiCompletions.Enqueue(() =>
+      {
+        if (result.Success)
+          _changeTokens[docKey] = postWriteToken;
+        completed(result);
+      });
+    });
 
     return true;
+  }
+
+  private static void EnsureCompletionIdleHandler()
+  {
+    if (_completionIdleHandler is not null)
+      return;
+
+    _completionIdleHandler = (_, _) =>
+    {
+      while (_uiCompletions.TryDequeue(out var completion))
+      {
+        try
+        {
+          completion();
+        }
+        catch (Exception ex)
+        {
+          _executing = false;
+          var message = $"AutoBackup completion error: {CompactDiagnostic(ex.Message)}";
+          vAutoBackupPlugIn.TryLog(message);
+          RhinoApp.WriteLine(WithNextRun(message));
+        }
+      }
+    };
+
+    RhinoApp.Idle += _completionIdleHandler;
   }
 
   /// <summary>
@@ -435,9 +480,7 @@ internal static class AutoBackupMonitor
   {
     try
     {
-      var partialInfo = new FileInfo(partialPath);
-      if (!partialInfo.Exists || partialInfo.Length <= 0)
-        throw new InvalidDataException("the temporary archive is missing or empty");
+      WaitForCompletedArchive(partialPath);
 
       using (var model = File3dm.ReadWithLog(partialPath, out var readLog))
       {
@@ -464,7 +507,7 @@ internal static class AutoBackupMonitor
       return new BackupResult(
         true,
         $"AutoBackup: backup created and verified: {backupPath}",
-        true,
+        false,
         deleted);
     }
     catch (Exception ex)
@@ -476,6 +519,46 @@ internal static class AutoBackupMonitor
         false,
         0);
     }
+  }
+
+  /// <summary>
+  /// Waits until Rhino's writer has released the temporary file, then requests
+  /// an OS disk flush before archive parsing begins.
+  /// </summary>
+  private static void WaitForCompletedArchive(string partialPath)
+  {
+    Exception? lastError = null;
+    for (var attempt = 0; attempt < 100; attempt++)
+    {
+      try
+      {
+        using var stream = new FileStream(
+          partialPath,
+          FileMode.Open,
+          FileAccess.ReadWrite,
+          FileShare.None);
+
+        if (stream.Length <= 0)
+          throw new InvalidDataException("the temporary archive is empty");
+
+        stream.Flush(flushToDisk: true);
+        return;
+      }
+      catch (IOException ex)
+      {
+        lastError = ex;
+      }
+      catch (UnauthorizedAccessException ex)
+      {
+        lastError = ex;
+      }
+
+      Thread.Sleep(100);
+    }
+
+    throw new IOException(
+      "the temporary archive did not become exclusively accessible within 10 seconds",
+      lastError);
   }
 
   // ---------------------------------------------------------------------------
