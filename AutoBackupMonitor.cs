@@ -46,7 +46,7 @@ internal static class AutoBackupMonitor
   private readonly record struct BackupResult(
     bool Success,
     string Message,
-    bool VerboseOnly,
+    AutoBackupLogLevel Level,
     int DeletedCount);
 
   // ---------------------------------------------------------------------------
@@ -99,14 +99,14 @@ internal static class AutoBackupMonitor
     if (!_running)
     {
       RhinoApp.WriteLine(
-        $"AutoBackup status: stopped | cleanup={settings.EnableCleanup} (keep {settings.KeepLast}) | verbose={settings.VerboseLogging}");
+        $"AutoBackup status: stopped | cleanup={settings.EnableCleanup} (keep {settings.KeepLast}) | logging={settings.LogLevel}");
       return;
     }
 
     RhinoApp.WriteLine(
       $"AutoBackup status: running (every {settings.IntervalMinutes:G} min, " +
       $"next in {FormatRemaining(_nextRun)}, at {_nextRun:HH:mm:ss}) | " +
-      $"cleanup={settings.EnableCleanup} (keep {settings.KeepLast}) | verbose={settings.VerboseLogging}");
+      $"cleanup={settings.EnableCleanup} (keep {settings.KeepLast}) | logging={settings.LogLevel}");
   }
 
   /// <summary>
@@ -159,7 +159,7 @@ internal static class AutoBackupMonitor
     var enableCleanup = s.EnableCleanup;
     var keepLast = s.KeepLast;
     var skipIfUnchanged = s.SkipIfUnchanged;
-    var verboseLogging = s.VerboseLogging;
+    var logLevel = s.LogLevel;
     var autoStart = s.AutoStart;
 
     while (true)
@@ -170,26 +170,24 @@ internal static class AutoBackupMonitor
       go.SetCommandPromptDefault("Enter to save");
 
       var cleanupToggle = new OptionToggle(enableCleanup, "Off", "On");
-      var verboseToggle = new OptionToggle(verboseLogging, "Off", "On");
       var skipToggle = new OptionToggle(skipIfUnchanged, "Off", "On");
       var autoStartToggle = new OptionToggle(autoStart, "Off", "On");
       var keepLastOpt = new OptionInteger(keepLast, true, 1);
+      var logLevels = Enum.GetNames<AutoBackupLogLevel>();
 
-      // Show current values as second argument per preference rule.
-      int backupRootIdx = go.AddOption("BackupRoot", backupRoot);
+      int backupRootIdx = go.AddOption("BackupRoot");
       int intervalIdx = go.AddOption("IntervalMin",
         intervalMinutes.ToString("G", CultureInfo.InvariantCulture));
       go.AddOptionToggle("Cleanup", ref cleanupToggle);
       go.AddOptionInteger("KeepLast", ref keepLastOpt);
       go.AddOptionToggle("SkipUnchanged", ref skipToggle);
-      go.AddOptionToggle("Verbose", ref verboseToggle);
+      int loggingIdx = go.AddOptionList("Logging", logLevels, (int)logLevel);
       go.AddOptionToggle("AutoStart", ref autoStartToggle);
 
       var res = go.Get();
 
       // Capture toggle / integer values from this pass before any early return.
       enableCleanup = cleanupToggle.CurrentValue;
-      verboseLogging = verboseToggle.CurrentValue;
       skipIfUnchanged = skipToggle.CurrentValue;
       autoStart = autoStartToggle.CurrentValue;
       keepLast = keepLastOpt.CurrentValue;
@@ -202,6 +200,14 @@ internal static class AutoBackupMonitor
         continue;
 
       var optIdx = go.Option().Index;
+
+      if (optIdx == loggingIdx)
+      {
+        var selected = go.Option().CurrentListOptionIndex;
+        if (selected >= 0 && selected < logLevels.Length)
+          logLevel = (AutoBackupLogLevel)selected;
+        continue;
+      }
 
       if (optIdx == backupRootIdx)
       {
@@ -251,7 +257,7 @@ internal static class AutoBackupMonitor
     s.EnableCleanup = enableCleanup;
     s.KeepLast = keepLast;
     s.SkipIfUnchanged = skipIfUnchanged;
-    s.VerboseLogging = verboseLogging;
+    s.LogLevel = logLevel;
     s.AutoStart = autoStart;
     s.Save();
 
@@ -262,7 +268,7 @@ internal static class AutoBackupMonitor
     RhinoApp.WriteLine(WithNextRun(
       $"AutoBackup options saved: root='{backupRoot}', interval={intervalMinutes:G} min, " +
       $"cleanup={enableCleanup} (keep {keepLast}), skipUnchanged={skipIfUnchanged}, " +
-      $"verbose={verboseLogging}, autoStart={autoStart}"));
+      $"logging={logLevel}, autoStart={autoStart}"));
 
     return true;
   }
@@ -293,7 +299,7 @@ internal static class AutoBackupMonitor
         SeedDocBaseline(doc, settings);
 
       Log($"AutoBackup: document changed to {DocLabel(doc)}. Timer reset; next backup at {_nextRun:HH:mm:ss}.",
-        settings, verboseOnly: true);
+        settings, AutoBackupLogLevel.Verbose);
       return;
     }
 
@@ -312,7 +318,7 @@ internal static class AutoBackupMonitor
         new BackupResult(
           false,
           $"AutoBackup periodic error: {CompactDiagnostic(ex.Message)}",
-          false,
+          AutoBackupLogLevel.Errors,
           0),
         settings);
     }
@@ -353,7 +359,7 @@ internal static class AutoBackupMonitor
         completed(new BackupResult(
           false,
           $"AutoBackup: initial baseline captured for {DocLabel(doc)}. Waiting for changes.",
-          false,
+          AutoBackupLogLevel.Info,
           0));
         return false;
       }
@@ -363,7 +369,7 @@ internal static class AutoBackupMonitor
         completed(new BackupResult(
           false,
           $"AutoBackup: no changes since last backup for {DocLabel(doc)}. Skipping.",
-          false,
+          AutoBackupLogLevel.Info,
           0));
         return false;
       }
@@ -395,7 +401,7 @@ internal static class AutoBackupMonitor
       completed(new BackupResult(
         false,
         $"AutoBackup: backup failed: {backupPath} | doc={DocLabel(doc)} | modified={doc.Modified}",
-        false,
+        AutoBackupLogLevel.Errors,
         0));
       return false;
     }
@@ -410,7 +416,7 @@ internal static class AutoBackupMonitor
     Log(
       $"AutoBackup: document written; verifying backup in background: {backupPath}",
       settings,
-      verboseOnly: true);
+      AutoBackupLogLevel.Verbose);
     vAutoBackupPlugIn.TryLog(
       $"Temporary backup written. Partial={partialPath} Final={backupPath}");
 
@@ -427,7 +433,7 @@ internal static class AutoBackupMonitor
         result = new BackupResult(
           false,
           $"AutoBackup: backup verification failed: {backupPath} | {CompactDiagnostic(ex.Message)}",
-          false,
+          AutoBackupLogLevel.Errors,
           0);
       }
 
@@ -507,8 +513,8 @@ internal static class AutoBackupMonitor
 
       return new BackupResult(
         true,
-        $"AutoBackup: backup created and verified: {backupPath}",
-        false,
+        $"AutoBackup: backup created: {backupPath}",
+        AutoBackupLogLevel.Info,
         deleted);
     }
     catch (Exception ex)
@@ -517,7 +523,7 @@ internal static class AutoBackupMonitor
       return new BackupResult(
         false,
         $"AutoBackup: backup verification failed: {backupPath} | {CompactDiagnostic(ex.Message)}",
-        false,
+        AutoBackupLogLevel.Errors,
         0);
     }
   }
@@ -582,7 +588,7 @@ internal static class AutoBackupMonitor
     if (doc is null)
       return;
     _changeTokens[DocKey(doc)] = GetChangeToken(doc);
-    Log($"AutoBackup: baseline seeded for {DocLabel(doc)}.", settings, verboseOnly: true);
+    Log($"AutoBackup: baseline seeded for {DocLabel(doc)}.", settings, AutoBackupLogLevel.Verbose);
   }
 
   // ---------------------------------------------------------------------------
@@ -835,18 +841,24 @@ internal static class AutoBackupMonitor
     return string.Join(" ", parts);
   }
 
-  private static void Log(string message, AutoBackupSettings settings, bool verboseOnly)
+  private static void Log(
+    string message,
+    AutoBackupSettings settings,
+    AutoBackupLogLevel level)
   {
-    if (verboseOnly && !settings.VerboseLogging)
+    if (settings.LogLevel < level)
       return;
     RhinoApp.WriteLine(message);
   }
 
   private static bool ReportResult(BackupResult result, AutoBackupSettings settings)
   {
-    Log(WithNextRun(result.Message), settings, result.VerboseOnly);
+    Log(WithNextRun(result.Message), settings, result.Level);
     if (result.DeletedCount > 0)
-      Log($"AutoBackup: cleanup removed {result.DeletedCount} old backup(s).", settings, verboseOnly: true);
+      Log(
+        $"AutoBackup: cleanup removed {result.DeletedCount} old backup(s).",
+        settings,
+        AutoBackupLogLevel.Verbose);
     return result.Success;
   }
 

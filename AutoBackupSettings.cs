@@ -5,6 +5,13 @@ using System.Text.Json.Nodes;
 
 namespace vAutoBackup;
 
+internal enum AutoBackupLogLevel
+{
+  Errors = 0,
+  Info = 1,
+  Verbose = 2
+}
+
 /// <summary>
 /// Typed settings for vAutoBackup, persisted to vAutoBackup.config.json next to the assembly.
 /// </summary>
@@ -18,7 +25,7 @@ internal sealed class AutoBackupSettings
   internal const bool DefaultEnableCleanup = true;
   internal const int DefaultKeepLast = 100;
   internal const bool DefaultSkipIfUnchanged = true;
-  internal const bool DefaultVerboseLogging = false;
+  internal const AutoBackupLogLevel DefaultLogLevel = AutoBackupLogLevel.Info;
   internal const bool DefaultAutoStart = true;
 
   public string BackupRoot { get; set; } = DefaultBackupRoot;
@@ -26,7 +33,7 @@ internal sealed class AutoBackupSettings
   public bool EnableCleanup { get; set; } = DefaultEnableCleanup;
   public int KeepLast { get; set; } = DefaultKeepLast;
   public bool SkipIfUnchanged { get; set; } = DefaultSkipIfUnchanged;
-  public bool VerboseLogging { get; set; } = DefaultVerboseLogging;
+  public AutoBackupLogLevel LogLevel { get; set; } = DefaultLogLevel;
   /// <summary>When true the backup timer is started automatically when the plug-in loads.</summary>
   public bool AutoStart { get; set; } = DefaultAutoStart;
 
@@ -63,7 +70,7 @@ internal sealed class AutoBackupSettings
           ["enableCleanup"] = EnableCleanup,
           ["keepLast"] = KeepLast,
           ["skipIfUnchanged"] = SkipIfUnchanged,
-          ["verboseLogging"] = VerboseLogging,
+          ["logLevel"] = LogLevel.ToString(),
           ["autoStart"] = AutoStart
         };
 
@@ -113,7 +120,10 @@ internal sealed class AutoBackupSettings
       if (TryGetBool(root, "enableCleanup", out var ec)) s.EnableCleanup = ec;
       if (TryGetInt(root, "keepLast", out var kl)) s.KeepLast = kl;
       if (TryGetBool(root, "skipIfUnchanged", out var su)) s.SkipIfUnchanged = su;
-      if (TryGetBool(root, "verboseLogging", out var vl)) s.VerboseLogging = vl;
+      if (TryGetLogLevel(root, "logLevel", out var level))
+        s.LogLevel = level;
+      else if (TryGetBool(root, "verboseLogging", out var legacyVerbose))
+        s.LogLevel = legacyVerbose ? AutoBackupLogLevel.Verbose : AutoBackupLogLevel.Info;
       if (TryGetBool(root, "autoStart", out var as_)) s.AutoStart = as_;
     }
     catch { }
@@ -150,6 +160,24 @@ internal sealed class AutoBackupSettings
       {
         if (jv.TryGetValue<bool>(out var b)) { value = b; return true; }
         if (jv.TryGetValue<int>(out var i)) { value = i != 0; return true; }
+      }
+    }
+    catch { }
+    return false;
+  }
+
+  private static bool TryGetLogLevel(JsonObject? obj, string key, out AutoBackupLogLevel value)
+  {
+    value = DefaultLogLevel;
+    try
+    {
+      if (obj?[key] is JsonValue jv &&
+          jv.TryGetValue<string>(out var text) &&
+          Enum.TryParse(text, ignoreCase: true, out AutoBackupLogLevel parsed) &&
+          Enum.IsDefined(parsed))
+      {
+        value = parsed;
+        return true;
       }
     }
     catch { }

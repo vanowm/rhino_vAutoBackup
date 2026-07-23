@@ -34,10 +34,10 @@ public class vAutoBackupPlugIn : PlugIn
       ? System.Diagnostics.FileVersionInfo.GetVersionInfo(asm.Location).FileVersion
       : null) ?? asm.GetName().Version?.ToString() ?? "unknown";
     var commandNames = CollectRegisteredCommandNames();
+    var settings = AutoBackupSettings.Current;
     TryLog($"OnLoad OK. Version={version}. Assembly={GetType().Assembly.Location}");
     RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
 
-    var settings = AutoBackupSettings.Current;
     if (settings.AutoStart)
       AutoBackupMonitor.Start(printMessage: true);
 

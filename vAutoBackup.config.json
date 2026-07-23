@@ -4,6 +4,6 @@
   "enableCleanup": true,
   "keepLast": 100,
   "skipIfUnchanged": true,
-  "verboseLogging": false,
+  "logLevel": "Info",
   "autoStart": true
 }
