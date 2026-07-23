@@ -101,7 +101,7 @@
 
     <Error
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(HasPendingMessage)' != 'true'"
-      Text="Missing $(PendingMessageFile). Run the normal workspace build task so it can compose the release commit message." />
+      Text="Missing $(PendingMessageFile). Run the normal workspace build task and supply a semantic release message." />
 
     <Exec
       Command="git -C &quot;$(MSBuildProjectDirectory)&quot; add -A -- ."

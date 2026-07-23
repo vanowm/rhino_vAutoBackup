@@ -1,5 +1,6 @@
 param(
-    [switch]$ComposeOnly
+    [switch]$ComposeOnly,
+    [string]$Message
 )
 
 Set-Location $PSScriptRoot
@@ -11,87 +12,28 @@ if (-not $projectFile) {
 }
 
 $projectName = [System.IO.Path]::GetFileNameWithoutExtension($projectFile.Name)
-$pendingFile = '.git\release-pending-message.txt'
+$pendingFile = Join-Path $PSScriptRoot '.git\release-pending-message.txt'
 
-function Get-Label([string]$name) {
-    if ($name.StartsWith('v') -and $name.Length -gt 1) { return $name.Substring(1) }
-    return $name
+if ([string]::IsNullOrWhiteSpace($Message)) {
+    Write-Error 'A semantic release message is required. Describe the behavior and build changes since the last commit with -Message.'
+    exit 1
 }
 
-function Build-LabelList([System.Collections.Generic.List[string]]$items) {
-    if ($items.Count -eq 0) { return '' }
-    $labels = New-Object System.Collections.Generic.List[string]
-    foreach ($item in $items) { [void]$labels.Add((Get-Label $item)) }
-    if ($labels.Count -le 2) { return ($labels -join ', ') }
-    return (($labels[0..1] -join ', ') + ', +' + ($labels.Count - 2) + ' more')
+$summary = $Message.Trim()
+$genericPart = '(?i)(^|;\s*)(?:add commands?:\s*[^;]+|update commands?:\s*[^;]+|[^:;]+:\s*update|build:\s*(?:align release workflow|publish release binary)|maintenance:\s*apply project updates)(?=\s*(?:;|$))'
+if ($summary.Length -lt 20 -or $summary -match $genericPart) {
+    Write-Error 'The release message must describe the actual behavior changed; category-only summaries such as "panel: update" are rejected.'
+    exit 1
 }
 
-# Rebuild the message from the complete working-tree state before every normal build.
-$changes = New-Object System.Collections.Generic.List[object]
-git status --porcelain=v1 --untracked-files=all -- . | ForEach-Object {
-    if ($_.Length -ge 4) {
-        $status = $_.Substring(0, 2).Trim()
-        $path = $_.Substring(3).Trim('"')
-        if ($path.Contains(' -> ')) { $path = ($path -split ' -> ', 2)[-1].Trim('"') }
-        $changes.Add([pscustomobject]@{ Status = $status; Path = ($path -replace '\\', '/') })
-    }
+if ($summary -match '(?i)\b[^\s;]+\.py\b') {
+    Write-Error 'Release messages must describe plug-in behavior without naming source script files.'
+    exit 1
 }
 
-$commandAdds = New-Object System.Collections.Generic.List[string]
-$commandUpdates = New-Object System.Collections.Generic.List[string]
-$hasBuildWorkflow = $false
-$hasDocs = $false
-$hasOptions = $false
-$hasViews = $false
-$hasResources = $false
-$hasPluginCode = $false
-$hasVerifiedFinalization = $false
-$hasDll = $false
-
-foreach ($change in $changes) {
-    $path = $change.Path
-    if ($path -eq 'README.md') { $hasDocs = $true }
-    if ($path -eq 'AGENTS.md' -or $path -eq 'build.ps1' -or $path -eq 'Build.Release.targets' -or
-        $path -eq $projectFile.Name -or $path -eq 'Properties/AssemblyInfo.cs') { $hasBuildWorkflow = $true }
-    if ($path -like 'Options/*.cs') { $hasOptions = $true }
-    if ($path -like 'Views/*.cs') { $hasViews = $true }
-    if ($path -like 'Resources/*') { $hasResources = $true }
-    if ($path -eq "bin/Release/net7.0-windows/$projectName.dll") { $hasDll = $true }
-
-    if ($path -like 'Commands/*.cs') {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($path)
-        if ($change.Status -eq '??' -or $change.Status -like 'A*') {
-            if (-not $commandAdds.Contains($name)) { [void]$commandAdds.Add($name) }
-        } elseif (-not $commandUpdates.Contains($name)) {
-            [void]$commandUpdates.Add($name)
-        }
-    } elseif ($path -eq 'AutoBackupMonitor.cs') {
-        $hasVerifiedFinalization = $true
-    } elseif ($path -like '*.cs' -and $path -ne 'Properties/AssemblyInfo.cs' -and
-              $path -notlike 'obj/*' -and $path -notlike 'bin/*') {
-        $hasPluginCode = $true
-    }
-}
-
-$parts = New-Object System.Collections.Generic.List[string]
-if ($commandAdds.Count -eq 1) { $parts.Add('add ' + (Get-Label $commandAdds[0]) + ' command') }
-elseif ($commandAdds.Count -gt 1) { $parts.Add('add commands: ' + (Build-LabelList $commandAdds)) }
-if ($commandUpdates.Count -eq 1) { $parts.Add((Get-Label $commandUpdates[0]) + ': update') }
-elseif ($commandUpdates.Count -gt 1) { $parts.Add('update commands: ' + (Build-LabelList $commandUpdates)) }
-if ($hasOptions) { $parts.Add('options: update') }
-if ($hasViews) { $parts.Add('panel: update') }
-if ($hasResources) { $parts.Add('resources: update') }
-if ($hasVerifiedFinalization) { $parts.Add('verify backup archives and finalize asynchronously') }
-if ($hasPluginCode) { $parts.Add('plugin: update') }
-if ($hasDocs) { $parts.Add('docs: update') }
-if ($hasBuildWorkflow) { $parts.Add('build: align release workflow') }
-if ($hasDll -and $parts.Count -eq 0) { $parts.Add('build: publish release binary') }
-if ($parts.Count -eq 0) { $parts.Add('maintenance: apply project updates') }
-
-$summary = ($parts -join '; ')
 $encoding = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText((Join-Path $PSScriptRoot $pendingFile), $summary, $encoding)
-Write-Host "Composed pending message: $summary" -ForegroundColor Green
+[System.IO.File]::WriteAllText($pendingFile, $summary, $encoding)
+Write-Host "Saved semantic pending message: $summary" -ForegroundColor Green
 
 if ($ComposeOnly) { exit 0 }
 
