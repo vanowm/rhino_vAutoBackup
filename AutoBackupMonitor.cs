@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Rhino;
 using Rhino.FileIO;
 using Rhino.Input;
@@ -15,8 +16,8 @@ namespace vAutoBackup;
 
 /// <summary>
 /// Core logic for periodic and on-demand backup of the active Rhino document.
-/// All public-facing state is confined to the UI thread; <see cref="BackupNow"/> and
-/// the timer callbacks are only ever called from Rhino command or Idle contexts.
+/// Rhino document access and all public-facing state are confined to the UI thread.
+/// File verification, finalization, and retention cleanup run in the background.
 /// </summary>
 internal static class AutoBackupMonitor
 {
@@ -67,7 +68,6 @@ internal static class AutoBackupMonitor
     _lastActiveDocSerial = 0; // force document-switch check on first idle tick
     _nextRun = DateTime.Now + IntervalSpan(settings);
     _running = true;
-    _executing = false;
 
     _idleHandler = OnIdle;
     RhinoApp.Idle += _idleHandler;
@@ -104,11 +104,17 @@ internal static class AutoBackupMonitor
   }
 
   /// <summary>
-  /// Performs an immediate backup of the active document, bypassing the change-skip filter.
-  /// Returns true on success.
+  /// Starts an immediate backup of the active document, bypassing the change-skip filter.
+  /// Returns true when the document write succeeds and background verification starts.
   /// </summary>
   internal static bool BackupNow()
   {
+    if (_executing)
+    {
+      RhinoApp.WriteLine(WithNextRun("AutoBackup: a backup is already in progress."));
+      return false;
+    }
+
     var doc = RhinoDoc.ActiveDoc;
     if (doc is null)
     {
@@ -117,8 +123,21 @@ internal static class AutoBackupMonitor
     }
 
     var settings = AutoBackupSettings.Current;
-    var result = BackupDocument(doc, settings, forceBackup: true);
-    return ReportResult(result, settings);
+    _executing = true;
+    try
+    {
+      return BeginBackupDocument(doc, settings, forceBackup: true, result =>
+      {
+        _executing = false;
+        ReportResult(result, settings);
+      });
+    }
+    catch (Exception ex)
+    {
+      _executing = false;
+      RhinoApp.WriteLine(WithNextRun($"AutoBackup error: {CompactDiagnostic(ex.Message)}"));
+      return false;
+    }
   }
 
   /// <summary>
@@ -276,34 +295,44 @@ internal static class AutoBackupMonitor
       return;
 
     _executing = true;
-    BackupResult? result = null;
-    string? errorMessage = null;
     try
     {
-      result = BackupDocument(doc, settings, forceBackup: false);
+      BeginBackupDocument(doc, settings, forceBackup: false,
+        result => CompletePeriodicBackup(result, settings));
     }
     catch (Exception ex)
     {
-      errorMessage = ex.Message;
+      CompletePeriodicBackup(
+        new BackupResult(
+          false,
+          $"AutoBackup periodic error: {CompactDiagnostic(ex.Message)}",
+          false,
+          0),
+        settings);
     }
-    finally
-    {
-      _executing = false;
-      // Reschedule regardless of success/failure, before reporting the result.
-      _nextRun = DateTime.Now + IntervalSpan(AutoBackupSettings.Current);
-    }
+  }
 
-    if (result is { } completed)
-      ReportResult(completed, settings);
-    else
-      RhinoApp.WriteLine(WithNextRun($"AutoBackup periodic error: {errorMessage}"));
+  private static void CompletePeriodicBackup(BackupResult result, AutoBackupSettings settings)
+  {
+    _executing = false;
+    if (_running)
+      _nextRun = DateTime.Now + IntervalSpan(AutoBackupSettings.Current);
+    ReportResult(result, settings);
   }
 
   // ---------------------------------------------------------------------------
   // Backup execution
   // ---------------------------------------------------------------------------
 
-  private static BackupResult BackupDocument(RhinoDoc doc, AutoBackupSettings settings, bool forceBackup)
+  /// <summary>
+  /// Writes the live Rhino document on the UI thread, then starts file-only work
+  /// on a background thread. The completion callback always runs on the UI thread.
+  /// </summary>
+  private static bool BeginBackupDocument(
+    RhinoDoc doc,
+    AutoBackupSettings settings,
+    bool forceBackup,
+    Action<BackupResult> completed)
   {
     var docKey = DocKey(doc);
     var currentToken = GetChangeToken(doc);
@@ -315,20 +344,22 @@ internal static class AutoBackupMonitor
         // First time we see this document: establish baseline and skip.
         // Avoids creating a backup immediately after a doc is opened/imported.
         _changeTokens[docKey] = currentToken;
-        return new BackupResult(
+        completed(new BackupResult(
           false,
           $"AutoBackup: initial baseline captured for {DocLabel(doc)}. Waiting for changes.",
           true,
-          0);
+          0));
+        return false;
       }
 
       if (lastToken == currentToken)
       {
-        return new BackupResult(
+        completed(new BackupResult(
           false,
           $"AutoBackup: no changes since last backup for {DocLabel(doc)}. Skipping.",
           true,
-          0);
+          0));
+        return false;
       }
     }
 
@@ -340,6 +371,9 @@ internal static class AutoBackupMonitor
     var backupDir = Path.GetDirectoryName(backupPath);
     if (!string.IsNullOrEmpty(backupDir) && !Directory.Exists(backupDir))
       Directory.CreateDirectory(backupDir);
+    var partialPath = Path.Combine(
+      backupDir ?? settings.BackupRoot,
+      $".vAutoBackup-{Guid.NewGuid():N}.partial.3dm");
 
     var writeOptions = new FileWriteOptions
     {
@@ -349,27 +383,96 @@ internal static class AutoBackupMonitor
       WriteSelectedObjectsOnly = false
     };
 
-    if (doc.Write3dmFile(backupPath, writeOptions))
+    if (!doc.Write3dmFile(partialPath, writeOptions))
     {
-      // Update stored token so the next skip-check uses post-backup state.
-      _changeTokens[docKey] = GetChangeToken(doc);
+      TryDeletePartial(partialPath);
+      completed(new BackupResult(
+        false,
+        $"AutoBackup: backup failed: {backupPath} | doc={DocLabel(doc)} | modified={doc.Modified}",
+        false,
+        0));
+      return false;
+    }
+
+    // Capture Rhino state while still on the UI thread. It becomes the new
+    // baseline only if the temporary archive passes background verification.
+    var postWriteToken = GetChangeToken(doc);
+    var enableCleanup = settings.EnableCleanup;
+    var keepLast = settings.KeepLast;
+
+    _ = Task.Run(() => FinalizeBackup(partialPath, backupPath, enableCleanup, keepLast))
+      .ContinueWith(task =>
+      {
+        var result = task.IsCompletedSuccessfully
+          ? task.Result
+          : new BackupResult(
+            false,
+            $"AutoBackup: backup verification failed: {backupPath} | " +
+            CompactDiagnostic(task.Exception?.GetBaseException().Message),
+            false,
+            0);
+
+        RhinoApp.InvokeOnUiThread(new Action(() =>
+        {
+          if (result.Success)
+            _changeTokens[docKey] = postWriteToken;
+          completed(result);
+        }));
+      }, TaskScheduler.Default);
+
+    return true;
+  }
+
+  /// <summary>
+  /// Reopens and validates the completed temporary archive before atomically
+  /// promoting it to the user-visible backup path.
+  /// </summary>
+  private static BackupResult FinalizeBackup(
+    string partialPath,
+    string backupPath,
+    bool enableCleanup,
+    int keepLast)
+  {
+    try
+    {
+      var partialInfo = new FileInfo(partialPath);
+      if (!partialInfo.Exists || partialInfo.Length <= 0)
+        throw new InvalidDataException("the temporary archive is missing or empty");
+
+      using (var model = File3dm.ReadWithLog(partialPath, out var readLog))
+      {
+        if (model is null)
+          throw new InvalidDataException(
+            $"Rhino could not reopen the temporary archive. {CompactDiagnostic(readLog)}".Trim());
+
+        if (!model.IsValid(out var validationLog))
+          throw new InvalidDataException(
+            $"the reopened archive is invalid. {CompactDiagnostic(validationLog)}".Trim());
+      }
+
+      // Source and destination share a directory, so promotion cannot expose a
+      // partially copied final file. Existing same-second backup names are replaced.
+      File.Move(partialPath, backupPath, overwrite: true);
 
       var deleted = 0;
-      if (settings.EnableCleanup && settings.KeepLast > 0)
-        deleted = CleanupOldBackups(backupPath, settings.KeepLast);
+      if (enableCleanup && keepLast > 0)
+        deleted = CleanupOldBackups(backupPath, keepLast);
 
       return new BackupResult(
         true,
-        $"AutoBackup: backup created: {backupPath}",
+        $"AutoBackup: backup created and verified: {backupPath}",
         true,
         deleted);
     }
-
-    return new BackupResult(
-      false,
-      $"AutoBackup: backup failed: {backupPath} | doc={DocLabel(doc)} | modified={doc.Modified}",
-      false,
-      0);
+    catch (Exception ex)
+    {
+      TryDeletePartial(partialPath);
+      return new BackupResult(
+        false,
+        $"AutoBackup: backup verification failed: {backupPath} | {CompactDiagnostic(ex.Message)}",
+        false,
+        0);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -600,6 +703,23 @@ internal static class AutoBackupMonitor
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  private static void TryDeletePartial(string partialPath)
+  {
+    try
+    {
+      if (File.Exists(partialPath))
+        File.Delete(partialPath);
+    }
+    catch { }
+  }
+
+  private static string CompactDiagnostic(string? message)
+  {
+    if (string.IsNullOrWhiteSpace(message))
+      return "unknown error";
+    return Regex.Replace(message, @"\s+", " ").Trim();
+  }
 
   private static void DetachIdleHandler()
   {

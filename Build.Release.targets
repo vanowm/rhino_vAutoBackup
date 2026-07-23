@@ -1,0 +1,192 @@
+<Project>
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <BuildVersion>0.0.0.0</BuildVersion>
+    <Version>$(BuildVersion)</Version>
+    <InformationalVersion>$(BuildVersion)</InformationalVersion>
+    <AssemblyVersion>$(BuildVersion)</AssemblyVersion>
+    <FileVersion>$(BuildVersion)</FileVersion>
+    <CopyRetryCount>0</CopyRetryCount>
+    <CopyRetryDelayMilliseconds>0</CopyRetryDelayMilliseconds>
+    <AutoCommitVersionOnRelease Condition="'$(AutoCommitVersionOnRelease)' == ''">true</AutoCommitVersionOnRelease>
+    <ReleaseDllPath>bin/Release/$(TargetFramework)/$(AssemblyName).dll</ReleaseDllPath>
+    <PendingMessageFile>$(MSBuildProjectDirectory)\.git\release-pending-message.txt</PendingMessageFile>
+    <CommitMessageFile>$(MSBuildProjectDirectory)\.git\release-commit-message.txt</CommitMessageFile>
+  </PropertyGroup>
+
+  <Target Name="ComputeSourceBuildVersion" BeforeTargets="GenerateBuildVersionInfo;CompileWin32Resources;UpdateReadmeVersion;CommitReleaseVersion">
+    <Exec
+      ConsoleToMSBuild="true"
+      StandardOutputImportance="low"
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$root='$(MSBuildProjectDirectory)'; $files=Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.cs' | Where-Object { $_.FullName -notmatch '\\(bin|obj|logs|backups|\.git)\\' -and $_.Name -notlike '*.Generated*' }; $latest=$files | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($latest) { $latest.LastWriteTime.ToString('yy.M.d.Hmm') } else { [DateTime]::Now.ToString('yy.M.d.Hmm') }&quot;">
+      <Output TaskParameter="ConsoleOutput" PropertyName="BuildVersion" />
+    </Exec>
+
+    <PropertyGroup>
+      <Version>$(BuildVersion)</Version>
+      <InformationalVersion>$(BuildVersion)</InformationalVersion>
+      <AssemblyVersion>$(BuildVersion)</AssemblyVersion>
+      <FileVersion>$(BuildVersion)</FileVersion>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="GenerateBuildVersionInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedVersionInfoFile>$(IntermediateOutputPath)$(AssemblyName).GeneratedVersionInfo.cs</GeneratedVersionInfoFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyVersion(&quot;$(AssemblyVersion)&quot;)]" />
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyFileVersion(&quot;$(FileVersion)&quot;)]" />
+      <GeneratedVersionInfoLines Include="[assembly: System.Reflection.AssemblyInformationalVersion(&quot;$(InformationalVersion)&quot;)]" />
+    </ItemGroup>
+
+    <WriteLinesToFile
+      File="$(GeneratedVersionInfoFile)"
+      Lines="@(GeneratedVersionInfoLines)"
+      Overwrite="true"
+      Encoding="UTF-8" />
+
+    <ItemGroup>
+      <Compile Include="$(GeneratedVersionInfoFile)" />
+    </ItemGroup>
+
+    <Message Importance="high" Text="$(AssemblyName) build version: $(BuildVersion)" />
+  </Target>
+
+  <Target Name="UpdateReadmeVersion" BeforeTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and Exists('$(MSBuildProjectDirectory)\README.md')">
+    <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$path='$(MSBuildProjectDirectory)\README.md'; $text=[System.IO.File]::ReadAllText($path); $match=[System.Text.RegularExpressions.Regex]::Match($text, '^(.*?)(\r?\n|$)'); if ($match.Success) { $first=$match.Groups[1].Value; $base=[System.Text.RegularExpressions.Regex]::Replace($first, '\s+\xB7\s+v[\d.]+\s*$', '').TrimEnd(); $updated=($base + '  ' + [char]0x00B7 + '  v$(Version)') + $text.Substring($match.Length - $match.Groups[2].Length); if ($updated -ne $text) { $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText($path,$updated,$enc) } }&quot;" />
+  </Target>
+
+  <Target Name="CreateReleaseBackup" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <BackupTimestamp>$([System.DateTime]::Now.ToString('yy.MM.dd.HHmmss'))</BackupTimestamp>
+      <BackupOutputRoot>$(MSBuildProjectDirectory)\bin\Release\backups\$(BackupTimestamp)</BackupOutputRoot>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <BackupFiles Include="$(TargetDir)**\*.*" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(BackupOutputRoot)" />
+    <Copy
+      SourceFiles="@(BackupFiles)"
+      DestinationFolder="$(BackupOutputRoot)\%(RecursiveDir)"
+      SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="$(AssemblyName) backup created: $(BackupOutputRoot)" />
+  </Target>
+
+  <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true' and Exists('$(MSBuildProjectDirectory)\.git') and !Exists('$(MSBuildProjectDirectory)\.git\release-hold-commits')">
+    <PropertyGroup>
+      <ShortTagVersion>$([System.Text.RegularExpressions.Regex]::Match('$(Version)', '^\d{2}\.\d{1,2}\.\d{1,2}').Value)</ShortTagVersion>
+    </PropertyGroup>
+
+    <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$changed=@(git -C '$(MSBuildProjectDirectory)' status --porcelain -- '$(ReleaseDllPath)'); if ($LASTEXITCODE -ne 0) { exit 2 }; if ($changed.Count -gt 0) { exit 1 }; exit 0&quot;"
+      IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="VersionDllStatusExitCode" />
+    </Exec>
+
+    <Error
+      Condition="'$(VersionDllStatusExitCode)' != '0' and '$(VersionDllStatusExitCode)' != '1'"
+      Text="Unable to inspect $(AssemblyName) release DLL status." />
+
+    <PropertyGroup Condition="'$(VersionDllStatusExitCode)' == '1'">
+      <ShouldVersionCommit>true</ShouldVersionCommit>
+      <HasPendingMessage Condition="Exists('$(PendingMessageFile)')">true</HasPendingMessage>
+    </PropertyGroup>
+
+    <Error
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(HasPendingMessage)' != 'true'"
+      Text="Missing $(PendingMessageFile). Run the normal workspace build task so it can compose the release commit message." />
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; add -A -- ."
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionGitAddExitCode" />
+    </Exec>
+
+    <Error
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionGitAddExitCode)' != '0'"
+      Text="Unable to stage $(AssemblyName) release changes." />
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; diff --cached --quiet -- &quot;$(ReleaseDllPath)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionDllDiffExitCode" />
+    </Exec>
+
+    <Exec
+      Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$body=[System.IO.File]::ReadAllText('$(PendingMessageFile)').Trim(); if ([string]::IsNullOrWhiteSpace($body)) { exit 1 }; $msg='$(Version): ' + $body; $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText('$(CommitMessageFile)',$msg,$enc)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '1'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionCommitMessageExitCode" />
+    </Exec>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; commit -S -F &quot;$(CommitMessageFile)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '1' and '$(VersionCommitMessageExitCode)' == '0'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionCommitExitCode" />
+    </Exec>
+
+    <Delete
+      Files="$(PendingMessageFile)"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'" />
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; push origin master"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'">
+      <Output TaskParameter="ExitCode" PropertyName="VersionPushExitCode" />
+    </Exec>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse -q --verify &quot;refs/tags/$(ShortTagVersion)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != ''">
+      <Output TaskParameter="ExitCode" PropertyName="ShortTagExistsExitCode" />
+    </Exec>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; tag &quot;$(ShortTagVersion)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0'">
+      <Output TaskParameter="ExitCode" PropertyName="ShortTagCreateExitCode" />
+    </Exec>
+
+    <Message Importance="high" Text="$(AssemblyName) version commit created: $(Version)"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit pushed to origin/master."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit push failed; commit remains local."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' != '0'" />
+    <Message Importance="high" Text="$(AssemblyName) short tag created: $(ShortTagVersion)"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) short tag skipped (already exists): $(ShortTagVersion)"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) short tag skipped (tag creation failed): $(ShortTagVersion)"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' != '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL unchanged)."
+      Condition="'$(VersionDllStatusExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL was not staged)."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (failed to build commit message)."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '1' and '$(VersionCommitMessageExitCode)' != '0'" />
+    <Message Importance="high" Text="$(AssemblyName) version commit skipped (signed git commit failed)."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionDllDiffExitCode)' == '1' and '$(VersionCommitMessageExitCode)' == '0' and '$(VersionCommitExitCode)' != '0'" />
+  </Target>
+
+  <Target Name="ShowOutputVersionAfterBuild" AfterTargets="Build" Condition="Exists('$(TargetPath)')">
+    <GetAssemblyIdentity AssemblyFiles="$(TargetPath)">
+      <Output TaskParameter="Assemblies" ItemName="BuiltAssembly" />
+    </GetAssemblyIdentity>
+    <Message Importance="high" Text="Built output: $(TargetPath)" />
+    <Message Importance="high" Text="Built version: %(BuiltAssembly.Version)" />
+  </Target>
+</Project>
