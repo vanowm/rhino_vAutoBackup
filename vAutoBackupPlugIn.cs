@@ -36,10 +36,11 @@ public class vAutoBackupPlugIn : PlugIn
     var commandNames = CollectRegisteredCommandNames();
     var settings = AutoBackupSettings.Current;
     TryLog($"OnLoad OK. Version={version}. Assembly={GetType().Assembly.Location}");
-    RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
+    if (settings.LogLevel >= AutoBackupLogLevel.Info)
+      RhinoApp.WriteLine($"vAutoBackup v{version} loaded. Commands: {string.Join(", ", commandNames)}");
 
     if (settings.AutoStart)
-      AutoBackupMonitor.Start(printMessage: true);
+      AutoBackupMonitor.Start(printMessage: settings.LogLevel >= AutoBackupLogLevel.Info);
 
     return LoadReturnCode.Success;
   }

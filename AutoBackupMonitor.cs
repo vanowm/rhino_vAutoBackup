@@ -175,7 +175,7 @@ internal static class AutoBackupMonitor
       var keepLastOpt = new OptionInteger(keepLast, true, 1);
       var logLevels = Enum.GetNames<AutoBackupLogLevel>();
 
-      int backupRootIdx = go.AddOption("BackupRoot");
+      int backupRootIdx = go.AddOption("BackupRoot", backupRoot);
       int intervalIdx = go.AddOption("IntervalMin",
         intervalMinutes.ToString("G", CultureInfo.InvariantCulture));
       go.AddOptionToggle("Cleanup", ref cleanupToggle);
@@ -212,7 +212,7 @@ internal static class AutoBackupMonitor
       if (optIdx == backupRootIdx)
       {
         var gs = new GetString();
-        gs.SetCommandPrompt($"Backup root (current: {backupRoot})");
+        gs.SetCommandPrompt("Backup root");
         gs.SetDefaultString(backupRoot);
         if (gs.Get() == GetResult.String)
         {
