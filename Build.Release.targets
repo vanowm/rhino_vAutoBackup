@@ -82,6 +82,7 @@
   <Target Name="CommitReleaseVersion" AfterTargets="CreateReleaseBackup" Condition="'$(Configuration)' == 'Release' and '$(AutoCommitVersionOnRelease)' == 'true' and Exists('$(MSBuildProjectDirectory)\.git') and !Exists('$(MSBuildProjectDirectory)\.git\release-hold-commits')">
     <PropertyGroup>
       <ShortTagVersion>$([System.Text.RegularExpressions.Regex]::Match('$(Version)', '^\d{2}\.\d{1,2}\.\d{1,2}').Value)</ShortTagVersion>
+      <ReleaseTagVersion>$(Version)</ReleaseTagVersion>
     </PropertyGroup>
 
     <Exec
@@ -160,6 +161,27 @@
       <Output TaskParameter="ExitCode" PropertyName="ShortTagCreateExitCode" />
     </Exec>
 
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse -q --verify &quot;refs/tags/$(ReleaseTagVersion)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0'">
+      <Output TaskParameter="ExitCode" PropertyName="ReleaseTagExistsExitCode" />
+    </Exec>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; tag &quot;$(ReleaseTagVersion)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagExistsExitCode)' != '0'">
+      <Output TaskParameter="ExitCode" PropertyName="ReleaseTagCreateExitCode" />
+    </Exec>
+
+    <Exec
+      Command="git -C &quot;$(MSBuildProjectDirectory)&quot; push origin &quot;refs/tags/$(ReleaseTagVersion)&quot;"
+      IgnoreExitCode="true"
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and ('$(ReleaseTagExistsExitCode)' == '0' or '$(ReleaseTagCreateExitCode)' == '0')">
+      <Output TaskParameter="ExitCode" PropertyName="ReleaseTagPushExitCode" />
+    </Exec>
+
     <Message Importance="high" Text="$(AssemblyName) version commit created: $(Version)"
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) version commit pushed to origin/master."
@@ -172,6 +194,10 @@
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) short tag skipped (tag creation failed): $(ShortTagVersion)"
       Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(ShortTagVersion)' != '' and '$(ShortTagExistsExitCode)' != '0' and '$(ShortTagCreateExitCode)' != '0'" />
+    <Message Importance="high" Text="$(AssemblyName) release tag pushed: $(ReleaseTagVersion); GitHub release publishing has started."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagPushExitCode)' == '0'" />
+    <Message Importance="high" Text="$(AssemblyName) release tag push failed: $(ReleaseTagVersion)."
+      Condition="'$(ShouldVersionCommit)' == 'true' and '$(VersionCommitExitCode)' == '0' and '$(VersionPushExitCode)' == '0' and '$(ReleaseTagPushExitCode)' != '' and '$(ReleaseTagPushExitCode)' != '0'" />
     <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL unchanged)."
       Condition="'$(VersionDllStatusExitCode)' == '0'" />
     <Message Importance="high" Text="$(AssemblyName) version commit skipped (release DLL was not staged)."

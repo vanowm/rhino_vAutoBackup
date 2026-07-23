@@ -1,0 +1,47 @@
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Check out tagged files
+        uses: actions/checkout@v4
+
+      - name: Create release and upload plug-in files
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          ASSEMBLY_NAME: vAutoBackup
+        run: |
+          $dll = Get-ChildItem -Path bin/Release -Recurse -File -Filter "$env:ASSEMBLY_NAME.dll" |
+            Where-Object { $_.FullName -notmatch '[\\/]backups[\\/]' } |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+
+          if (-not $dll) {
+            throw "Could not find $env:ASSEMBLY_NAME.dll in the tagged repository."
+          }
+
+          $assets = @($dll.FullName)
+          $assets += @(Get-ChildItem -Path $dll.DirectoryName -File -Filter '*.rui' | ForEach-Object FullName)
+          $title = "$env:ASSEMBLY_NAME $env:RELEASE_TAG"
+
+          & gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $env:RELEASE_TAG @assets --clobber
+          } else {
+            & gh release create $env:RELEASE_TAG @assets --verify-tag --title $title --generate-notes
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub release publishing failed for $env:RELEASE_TAG."
+          }
