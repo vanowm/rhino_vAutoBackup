@@ -1,4 +1,4 @@
-# vAutoBackup  ·  v26.7.23.1807
+# vAutoBackup  ·  v26.7.23.1911
 
 vAutoBackup is a Rhino 8 and Rhino 9 plug-in for verified periodic and one-shot backups of the active document.
 

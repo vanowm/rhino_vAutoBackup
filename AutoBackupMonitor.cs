@@ -1,10 +1,12 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -394,7 +396,13 @@ internal static class AutoBackupMonitor
       WriteSelectedObjectsOnly = false
     };
 
-    if (!doc.Write3dmFile(partialPath, writeOptions))
+    var writeTimer = Stopwatch.StartNew();
+    var writeSucceeded = doc.Write3dmFile(partialPath, writeOptions);
+    writeTimer.Stop();
+    vAutoBackup.Log.Write(
+      $"Rhino document write completed in {writeTimer.Elapsed.TotalSeconds:F3}s. Success={writeSucceeded} Partial={partialPath}");
+
+    if (!writeSucceeded)
     {
       TryDeletePartial(partialPath);
       completed(new BackupResult(
@@ -475,8 +483,8 @@ internal static class AutoBackupMonitor
   }
 
   /// <summary>
-  /// Reopens and validates the completed temporary archive before atomically
-  /// promoting it to the user-visible backup path.
+  /// Validates the completed temporary archive with file-only I/O before
+  /// atomically promoting it to the user-visible backup path.
   /// </summary>
   private static BackupResult FinalizeBackup(
     string partialPath,
@@ -486,21 +494,7 @@ internal static class AutoBackupMonitor
   {
     try
     {
-      WaitForCompletedArchive(partialPath);
-
-      using (var model = File3dm.ReadWithLog(partialPath, out var readLog))
-      {
-        if (model is null)
-          throw new InvalidDataException(
-            $"Rhino could not reopen the temporary archive. {CompactDiagnostic(readLog)}".Trim());
-
-        if (!string.IsNullOrWhiteSpace(readLog))
-          throw new InvalidDataException(
-            $"Rhino reported archive read errors. {CompactDiagnostic(readLog)}".Trim());
-
-        if (model.ArchiveVersion <= 0)
-          throw new InvalidDataException("the reopened archive has no valid 3DM version");
-      }
+      ValidateCompletedArchive(partialPath);
 
       // Source and destination share a directory, so promotion cannot expose a
       // partially copied final file. Existing same-second backup names are replaced.
@@ -528,11 +522,15 @@ internal static class AutoBackupMonitor
   }
 
   /// <summary>
-  /// Waits until Rhino's writer has released the temporary file, then requests
-  /// an OS disk flush before archive parsing begins.
+  /// Waits until Rhino's writer has released the temporary file, requests an OS
+  /// disk flush, and verifies the modern 3DM header and end-of-file length chunk.
   /// </summary>
-  private static void WaitForCompletedArchive(string partialPath)
+  private static void ValidateCompletedArchive(string partialPath)
   {
+    const string headerText = "3D Geometry File Format ";
+    const uint endOfFileTypeCode = 0x00007FFF;
+    const int endOfFileChunkSize = 20;
+
     Exception? lastError = null;
     for (var attempt = 0; attempt < 100; attempt++)
     {
@@ -544,10 +542,30 @@ internal static class AutoBackupMonitor
           FileAccess.ReadWrite,
           FileShare.None);
 
-        if (stream.Length <= 0)
-          throw new InvalidDataException("the temporary archive is empty");
+        if (stream.Length < headerText.Length + endOfFileChunkSize)
+          throw new InvalidDataException("the temporary archive is too short to be a complete 3DM file");
 
         stream.Flush(flushToDisk: true);
+
+        var header = new byte[headerText.Length];
+        stream.Position = 0;
+        stream.ReadExactly(header);
+        if (!string.Equals(Encoding.ASCII.GetString(header), headerText, StringComparison.Ordinal))
+          throw new InvalidDataException("the temporary archive has an invalid 3DM header");
+
+        var endChunk = new byte[endOfFileChunkSize];
+        stream.Position = stream.Length - endChunk.Length;
+        stream.ReadExactly(endChunk);
+
+        var typeCode = BinaryPrimitives.ReadUInt32LittleEndian(endChunk.AsSpan(0, 4));
+        var payloadLength = BinaryPrimitives.ReadInt64LittleEndian(endChunk.AsSpan(4, 8));
+        var recordedFileLength = BinaryPrimitives.ReadInt64LittleEndian(endChunk.AsSpan(12, 8));
+        if (typeCode != endOfFileTypeCode || payloadLength != sizeof(long))
+          throw new InvalidDataException("the temporary archive has no valid 3DM end-of-file chunk");
+        if (recordedFileLength != stream.Length)
+          throw new InvalidDataException(
+            $"the temporary archive length is incomplete ({stream.Length} bytes; expected {recordedFileLength})");
+
         return;
       }
       catch (IOException ex)
