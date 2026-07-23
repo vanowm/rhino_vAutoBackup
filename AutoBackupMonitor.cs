@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,7 +38,7 @@ internal static class AutoBackupMonitor
   private static readonly ConcurrentQueue<Action> _uiCompletions = new();
 
   // Per-document change tokens: key = "runtimeSerial|path"
-  private static readonly Dictionary<string, (bool Modified, int UndoSerial)> _changeTokens = new();
+  private static readonly Dictionary<string, (bool Modified, uint UndoSerial)> _changeTokens = new();
 
   // Stable names for unsaved documents, keyed by RuntimeSerialNumber
   private static readonly Dictionary<uint, string> _unsavedNames = new();
@@ -408,8 +407,10 @@ internal static class AutoBackupMonitor
     var keepLast = settings.KeepLast;
     EnsureCompletionIdleHandler();
 
-    RhinoApp.WriteLine(
-      $"AutoBackup: document written; verifying backup in background: {backupPath}");
+    Log(
+      $"AutoBackup: document written; verifying backup in background: {backupPath}",
+      settings,
+      verboseOnly: true);
     vAutoBackupPlugIn.TryLog(
       $"Temporary backup written. Partial={partialPath} Final={backupPath}");
 
@@ -568,22 +569,12 @@ internal static class AutoBackupMonitor
   /// <summary>
   /// Returns a lightweight token that changes when the document's edit state changes.
   /// Mirrors the Python version: (doc.Modified, doc.NextUndoRecordSerialNumber).
-  /// Falls back to (Modified, 0) if the undo-serial property is unavailable via reflection.
+  /// Falls back to (Modified, 0) if Rhino cannot supply the undo serial.
   /// </summary>
-  private static (bool Modified, int UndoSerial) GetChangeToken(RhinoDoc doc)
+  private static (bool Modified, uint UndoSerial) GetChangeToken(RhinoDoc doc)
   {
-    int undoSerial = 0;
-    try
-    {
-      var prop = typeof(RhinoDoc).GetProperty(
-        "NextUndoRecordSerialNumber",
-        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-      if (prop?.GetValue(doc) is int v)
-        undoSerial = v;
-    }
-    catch { }
-
-    return (doc.Modified, undoSerial);
+    try { return (doc.Modified, doc.NextUndoRecordSerialNumber); }
+    catch { return (doc.Modified, 0); }
   }
 
   private static void SeedDocBaseline(RhinoDoc? doc, AutoBackupSettings settings)
