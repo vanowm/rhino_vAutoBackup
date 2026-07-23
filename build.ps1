@@ -14,14 +14,25 @@ if (-not $projectFile) {
 $projectName = [System.IO.Path]::GetFileNameWithoutExtension($projectFile.Name)
 $pendingFile = Join-Path $PSScriptRoot '.git\release-pending-message.txt'
 
-if ([string]::IsNullOrWhiteSpace($Message)) {
-    Write-Error 'A semantic release message is required. Describe the behavior and build changes since the last commit with -Message.'
+$messageWasSupplied = -not [string]::IsNullOrWhiteSpace($Message)
+$messageWasPrompted = $false
+
+if ($messageWasSupplied) {
+    $summary = $Message.Trim()
+} elseif (Test-Path -LiteralPath $pendingFile) {
+    $summary = [System.IO.File]::ReadAllText($pendingFile).Trim()
+    Write-Host "Using existing semantic pending message: $summary" -ForegroundColor Green
+} elseif ($ComposeOnly) {
+    Write-Error 'A semantic release message is required. Supply it with -Message.'
     exit 1
+} else {
+    $promptedMessage = Read-Host 'Describe plug-in behavior and build changes since the last commit'
+    $summary = if ($null -eq $promptedMessage) { '' } else { $promptedMessage.Trim() }
+    $messageWasPrompted = $true
 }
 
-$summary = $Message.Trim()
 $genericPart = '(?i)(^|;\s*)(?:add commands?:\s*[^;]+|update commands?:\s*[^;]+|[^:;]+:\s*update|build:\s*(?:align release workflow|publish release binary)|maintenance:\s*apply project updates)(?=\s*(?:;|$))'
-if ($summary.Length -lt 20 -or $summary -match $genericPart) {
+if ([string]::IsNullOrWhiteSpace($summary) -or $summary.Length -lt 20 -or $summary -match $genericPart) {
     Write-Error 'The release message must describe the actual behavior changed; category-only summaries such as "panel: update" are rejected.'
     exit 1
 }
@@ -31,9 +42,11 @@ if ($summary -match '(?i)\b[^\s;]+\.py\b') {
     exit 1
 }
 
-$encoding = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($pendingFile, $summary, $encoding)
-Write-Host "Saved semantic pending message: $summary" -ForegroundColor Green
+if ($messageWasSupplied -or $messageWasPrompted) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($pendingFile, $summary, $encoding)
+    Write-Host "Saved semantic pending message: $summary" -ForegroundColor Green
+}
 
 if ($ComposeOnly) { exit 0 }
 
